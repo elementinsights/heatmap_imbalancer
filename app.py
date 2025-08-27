@@ -1,12 +1,25 @@
-# app.py — Streamlit viewer (totals only) showing 12h + 24h side-by-side
-import os, math, requests
+# app.py — Streamlit viewer (totals only) showing 12h + 24h side-by-side with auto-refresh
+import os, math, requests, datetime as dt
 from collections import defaultdict
 from dotenv import load_dotenv
 import streamlit as st
 import pandas as pd
+from streamlit_autorefresh import st_autorefresh  # <-- NEW
 
 API_HOST = "https://open-api-v4.coinglass.com"
 ENDPOINT  = "/api/futures/liquidation/aggregated-heatmap/model2"  # coin-level (all exchanges)
+
+st.set_page_config(page_title="Model-2 Heatmap Viewer", layout="wide")
+
+# Auto-refresh every 5 minutes (300,000 ms)
+st_autorefresh(interval=300_000, key="auto5m")
+
+# Tighten left/right padding
+st.markdown("""
+<style>
+.block-container {padding-top: 1rem; padding-bottom: 2rem; padding-left: 2rem; padding-right: 2rem;}
+</style>
+""", unsafe_allow_html=True)
 
 # ---------- helpers ----------
 def get_api_key() -> str:
@@ -25,7 +38,7 @@ def try_fetch(url, headers, params):
         j = {}
     return r, j
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)  # cache each timeframe for 5 minutes
 def fetch_coin_model2(currency: str, timeframe: str):
     headers = {"CG-API-KEY": get_api_key(), "accept": "application/json"}
     url = f"{API_HOST}{ENDPOINT}"
@@ -42,7 +55,7 @@ def fetch_coin_model2(currency: str, timeframe: str):
             last_error = f"HTTP {r.status_code}: {r.text[:200]}"
             continue
         if str(j.get("code")) == "0" and "data" in j:
-            return j["data"], params
+            return j["data"], params, dt.datetime.utcnow()
         last_error = f"code={j.get('code')} msg={j.get('msg')}"
     raise RuntimeError(last_error or "Could not fetch Model-2 heatmap")
 
@@ -73,11 +86,8 @@ def aggregate_totals_by_level(y_axis, liq_triples):
         if 0 <= yi < len(levels) and math.isfinite(amt):
             sums[yi] += amt
 
-    rows = []
-    for idx, lvl in enumerate(levels):
-        if math.isfinite(lvl):
-            rows.append({"level": lvl, "total_usd": sums.get(idx, 0.0)})
-    return rows
+    return [{"level": lvl, "total_usd": sums.get(idx, 0.0)}
+            for idx, lvl in enumerate(levels) if math.isfinite(lvl)]
 
 def split_window(rows, price, pct):
     tol = pct / 100.0
@@ -96,29 +106,20 @@ def imbalance_above_below(below, above):
 def styled(df):
     return df.style.format({"level": "{:,.2f}", "total_usd": "{:,.0f}"})
 
-# ---------- UI ----------
-st.set_page_config(page_title="Model-2 Heatmap Viewer", layout="wide")
-
-# Tighten left/right padding
-st.markdown("""
-<style>
-/* Reduce default page padding */
-.block-container {padding-top: 1rem; padding-bottom: 2rem; padding-left: 2rem; padding-right: 2rem;}
-</style>
-""", unsafe_allow_html=True)
-
+# ---------- Sidebar ----------
 with st.sidebar:
     st.header("Settings")
     currency  = st.text_input("Currency (coin symbol)", value="BTC").upper().strip()
     pct_win   = st.slider("± Window (%)", min_value=0.5, max_value=20.0, value=6.0, step=0.5)
-    st.caption("Showing both 12h and 24h (coin aggregated, totals only).")
+    if st.button("Refresh now"):
+        st.cache_data.clear()
 
-st.title("Coinglass Model-2 Heatmap — 12h & 24h")
+st.title("Coinglass Model-2 Heatmap — 12h & 24h (auto-refresh every 5 min)")
 
 def render_panel(timeframe: str, col):
     with col:
         try:
-            data, used_params = fetch_coin_model2(currency, timeframe)
+            data, used_params, fetched_at_utc = fetch_coin_model2(currency, timeframe)
             price = get_current_price(data.get("price_candlesticks", []))
         except Exception as e:
             st.error(f"[{timeframe}] Fetch error: {e}")
@@ -126,7 +127,7 @@ def render_panel(timeframe: str, col):
 
         st.subheader(f"{timeframe}")
         st.metric(f"{currency} (Model-2 {timeframe})", f"${price:,.2f}")
-        st.caption(f"Params used: {used_params}")
+        st.caption(f"Params: {used_params}  ·  Last updated: {fetched_at_utc:%Y-%m-%d %H:%M:%S} UTC")
 
         rows = aggregate_totals_by_level(data.get("y_axis", []),
                                          data.get("liquidation_leverage_data", []))
