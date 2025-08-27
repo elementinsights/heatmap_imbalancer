@@ -13,7 +13,7 @@ TIMEFRAMES = ["12h", "24h", "72h"]  # shown together
 
 # ---------- page ----------
 st.set_page_config(page_title="Model-2 Heatmap Viewer", layout="wide")
-st_autorefresh(interval=300_000, key="auto5m")  # rerun every 5 minutes
+st_autorefresh(interval=60_000, key="auto5m")  # rerun every 5 minutes
 
 # Trim side padding
 st.markdown("""
