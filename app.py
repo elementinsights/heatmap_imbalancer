@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 
 API_HOST = "https://open-api-v4.coinglass.com"
 ENDPOINT = "/api/futures/liquidation/aggregated-heatmap/model2"  # coin-level (all exchanges)
+CURRENCY = "ETH"
 
 def get_api_key():
     load_dotenv()
@@ -20,11 +21,11 @@ def fetch_price_coin_model2_12h():
     # Different tenants name the coin param differently; try a few.
     # Server error you saw also asked for 'range', so we pass range=12h.
     param_options = [
-        {"currency": "BTC", "range": "12h"},
-        {"symbol": "BTC", "range": "12h"},
-        {"coin": "BTC", "range": "12h"},
+        {"currency": CURRENCY, "range": "12h"},
+        {"symbol": CURRENCY, "range": "12h"},
+        {"coin": CURRENCY, "range": "12h"},
         # Some accounts use "interval" instead of "range":
-        {"currency": "BTC", "interval": "12h"},
+        {"currency": CURRENCY, "interval": "12h"},
     ]
 
     last_err = None
@@ -61,7 +62,7 @@ def fetch_price_coin_model2_12h():
 if __name__ == "__main__":
     try:
         price = fetch_price_coin_model2_12h()
-        print(f"BTC (Model2 12h) price: ${price:,.2f}")
+        print(CURRENCY + f" (Model2 12h) price: ${price:,.2f}")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
