@@ -1,0 +1,66 @@
+# ──────────────────────────────
+# Python
+# ──────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pkl
+*.db
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+.eggs/
+
+# Byte-compiled / optimized / DLL files
+*.so
+*.dll
+*.dylib
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Coverage / test
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.mypy_cache/
+
+# ──────────────────────────────
+# IDE (PyCharm / JetBrains)
+# ──────────────────────────────
+.idea/
+*.iml
+
+# VSCode
+.vscode/
+
+# ──────────────────────────────
+# Env / Config
+# ──────────────────────────────
+.env
+.env.*
+*.secret
+*.key
+
+# ──────────────────────────────
+# OS files
+# ──────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ──────────────────────────────
+# Project-specific
+# ──────────────────────────────
+# Ignore output, temporary, or local test files
+output/
+tmp/
+cache/
