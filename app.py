@@ -1,4 +1,4 @@
-# app.py — Coinglass Model-2 Heatmap (totals only): 12h, 24h, 72h with optional tables
+# app.py — Coinglass Model-2 Heatmap (totals only): 12h, 48h, 72h with optional combined table
 import os, math, requests, datetime as dt
 from collections import defaultdict
 from dotenv import load_dotenv
@@ -9,7 +9,8 @@ from streamlit_autorefresh import st_autorefresh  # pip install streamlit-autore
 API_HOST = "https://open-api-v4.coinglass.com"
 COIN_ENDPOINT = "/api/futures/liquidation/aggregated-heatmap/model2"
 PAIR_ENDPOINT = "/api/futures/liquidation/heatmap/model2"
-TIMEFRAMES = ["12h", "24h", "72h"]  # shown together
+TIMEFRAMES = ["12h", "24h", "72h"]  # shown in a single column
+
 
 # ---------- page ----------
 st.set_page_config(page_title="Model-2 Heatmap Viewer", layout="wide")
@@ -40,7 +41,7 @@ def try_fetch(url, headers, params):
     return r, j
 
 def timeframe_variants(tf: str):
-    """Common encodings for '12h','24h','72h' etc."""
+    """Common encodings for '12h','24h','48h','72h' etc."""
     tf = tf.strip().lower()
     variants = {tf}
     if tf.endswith("h"):
@@ -49,9 +50,12 @@ def timeframe_variants(tf: str):
         if n % 24 == 0:
             d = n // 24
             variants |= {f"{d}d", f"{d}day", f"{d} days"}
-    order = ["12h","24h","72h","1d","3d",
-             "12hour","24hour","72hour","12 hours","24 hours","72 hours",
-             "1day","3day"]
+    order = [
+        "12h","24h","48h","72h","1d","2d","3d",
+        "12hour","24hour","48hour","72hour",
+        "12 hours","24 hours","48 hours","72 hours",
+        "1day","2day","3day"
+    ]
     return [v for v in order if v in variants]
 
 @st.cache_data(ttl=300)  # cache per (coin, timeframe) for 5 minutes
@@ -157,15 +161,38 @@ def imbalance_above_below(below, above):
     return ((total_above - total_below)/denom if denom else 0.0,
             total_above, total_below)
 
+def fmt_compact(n: float) -> str:
+    """Return 1 decimal compact suffix (K/M/B/T)."""
+    n = float(n)
+    absn = abs(n)
+    if absn >= 1e12:
+        return f"{n/1e12:.1f}T"
+    if absn >= 1e9:
+        return f"{n/1e9:.1f}B"
+    if absn >= 1e6:
+        return f"{n/1e6:.1f}M"
+    if absn >= 1e3:
+        return f"{n/1e3:.1f}K"
+    return f"{n:.0f}"
+
 def styled(df):
-    return df.style.format({"level": "{:,.2f}", "total_usd": "{:,.0f}"})
+    # Keep 'level' as price with 2 decimals, totals compact like 6.1B
+    return df.style.format({
+        "level": "{:,.2f}",
+        "total_usd": lambda x: fmt_compact(x)
+    })
+
+def combine_below_above(below, above):
+    """Single table with a 'side' column, preserving proximity order (below nearest first, then above)."""
+    rows = [{"side": "Below", **r} for r in below] + [{"side": "Above", **r} for r in above]
+    return rows
 
 # ---------- sidebar ----------
 with st.sidebar:
     st.header("Settings")
     currency   = st.text_input("Currency (coin symbol)", value="BTC").upper().strip()
     pct_win    = st.slider("± Window (%)", 0.5, 20.0, 6.0, 0.5)
-    show_tables = st.checkbox("Show tables (Below/Above)", value=False)  # <- NEW (hidden by default)
+    show_tables = st.checkbox("Show combined table (Below & Above)", value=False)
     if st.button("Refresh now"):
         st.cache_data.clear()
 
@@ -188,29 +215,23 @@ def render_panel(timeframe: str, container):
                                          data.get("liquidation_leverage_data", []))
         below, above = split_window(rows, price, pct_win)
 
+        # Combined table
         if show_tables:
-            st.markdown(f"**Levels within ±{pct_win}%**")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**Below**")
-                st.dataframe(styled(pd.DataFrame(below)) if below else pd.DataFrame(columns=["level","total_usd"]),
-                             use_container_width=True)
-            with c2:
-                st.markdown("**Above**")
-                st.dataframe(styled(pd.DataFrame(above)) if above else pd.DataFrame(columns=["level","total_usd"]),
-                             use_container_width=True)
+            st.markdown(f"**Levels within ±{pct_win}% (combined)**")
+            combined = combine_below_above(below, above)
+            df = pd.DataFrame(combined, columns=["side", "level", "total_usd"])
+            st.dataframe(styled(df), use_container_width=True)
 
+        # Metrics with compact numbers
         pos_imb, tot_above, tot_below = imbalance_above_below(below, above)
         st.markdown("**Imbalance**")
         m1, m2, m3 = st.columns(3)
-        m1.metric("Above Total", f"${tot_above:,.0f}")
-        m2.metric("Below Total", f"${tot_below:,.0f}")
+        m1.metric("Above Total", f"${fmt_compact(tot_above)}")
+        m2.metric("Below Total", f"${fmt_compact(tot_below)}")
         m3.metric("Above/Below Imbalance", f"{pos_imb:.2%}")
 
-# Layout: first row 12h + 24h, second row 72h full width
-row1 = st.columns(2)
-render_panel("12h", row1[0])
-render_panel("24h", row1[1])
-
-sec72 = st.container()
-render_panel("72h", sec72)
+# Layout: single column with 12h, 48h, 72h panels stacked
+col = st.container()
+for tf in TIMEFRAMES:
+    render_panel(tf, col)
+    st.divider()
