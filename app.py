@@ -1,4 +1,4 @@
-# app.py — Coinglass Model-2 Heatmap (totals only): 12h, 24h, 72h
+# app.py — Coinglass Model-2 Heatmap (totals only): 12h, 24h, 72h with optional tables
 import os, math, requests, datetime as dt
 from collections import defaultdict
 from dotenv import load_dotenv
@@ -49,12 +49,12 @@ def timeframe_variants(tf: str):
         if n % 24 == 0:
             d = n // 24
             variants |= {f"{d}d", f"{d}day", f"{d} days"}
-    order = ["12h","24h","72h","1d","2d","3d",
+    order = ["12h","24h","72h","1d","3d",
              "12hour","24hour","72hour","12 hours","24 hours","72 hours",
-             "1day","2day","3day"]
+             "1day","3day"]
     return [v for v in order if v in variants]
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300)  # cache per (coin, timeframe) for 5 minutes
 def fetch_coin_model2_raw(currency: str, timeframe: str):
     """COIN (aggregated) Model-2 only. Return (data, used_params, fetched_at_utc)."""
     headers = {"CG-API-KEY": get_api_key(), "accept": "application/json"}
@@ -163,12 +163,13 @@ def styled(df):
 # ---------- sidebar ----------
 with st.sidebar:
     st.header("Settings")
-    currency = st.text_input("Currency (coin symbol)", value="BTC").upper().strip()
-    pct_win  = st.slider("± Window (%)", 0.5, 20.0, 6.0, 0.5)
+    currency   = st.text_input("Currency (coin symbol)", value="BTC").upper().strip()
+    pct_win    = st.slider("± Window (%)", 0.5, 20.0, 6.0, 0.5)
+    show_tables = st.checkbox("Show tables (Below/Above)", value=False)  # <- NEW (hidden by default)
     if st.button("Refresh now"):
         st.cache_data.clear()
 
-st.title("Coinglass Model-2 Heatmap — 12h · 24h · 72h (auto-refresh 5m)")
+st.title("Coinglass Model-2 Heatmap")
 
 def render_panel(timeframe: str, container):
     with container:
@@ -179,7 +180,7 @@ def render_panel(timeframe: str, container):
             st.error(f"[{timeframe}] Fetch error: {e}")
             return
 
-        st.subheader(f"{timeframe} · source: {source_kind}")
+        st.subheader(f"{timeframe}")
         st.metric(f"{currency} (Model-2 {timeframe})", f"${price:,.2f}")
         st.caption(f"Params: {used_params} · Last updated: {fetched_at_utc:%Y-%m-%d %H:%M:%S} UTC")
 
@@ -187,16 +188,17 @@ def render_panel(timeframe: str, container):
                                          data.get("liquidation_leverage_data", []))
         below, above = split_window(rows, price, pct_win)
 
-        st.markdown(f"**Levels within ±{pct_win}%**")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**Below**")
-            st.dataframe(styled(pd.DataFrame(below)) if below else pd.DataFrame(columns=["level","total_usd"]),
-                         use_container_width=True)
-        with c2:
-            st.markdown("**Above**")
-            st.dataframe(styled(pd.DataFrame(above)) if above else pd.DataFrame(columns=["level","total_usd"]),
-                         use_container_width=True)
+        if show_tables:
+            st.markdown(f"**Levels within ±{pct_win}%**")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Below**")
+                st.dataframe(styled(pd.DataFrame(below)) if below else pd.DataFrame(columns=["level","total_usd"]),
+                             use_container_width=True)
+            with c2:
+                st.markdown("**Above**")
+                st.dataframe(styled(pd.DataFrame(above)) if above else pd.DataFrame(columns=["level","total_usd"]),
+                             use_container_width=True)
 
         pos_imb, tot_above, tot_below = imbalance_above_below(below, above)
         st.markdown("**Imbalance**")
