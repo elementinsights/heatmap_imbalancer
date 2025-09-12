@@ -1,6 +1,4 @@
-# app.py — Coinglass Model-2 Heatmap (snapshot only): 12h, 24h, 72h
-# Imbalance is computed from the *latest time slice only* (no historical accumulation).
-
+# app.py — Coinglass Model-2 Heatmap (totals only): 12h, 48h, 72h with optional combined table
 import os, math, requests, datetime as dt
 from collections import defaultdict
 from dotenv import load_dotenv
@@ -13,8 +11,9 @@ COIN_ENDPOINT = "/api/futures/liquidation/aggregated-heatmap/model2"
 PAIR_ENDPOINT = "/api/futures/liquidation/heatmap/model2"
 TIMEFRAMES = ["12h", "24h", "72h"]  # shown in a single column
 
+
 # ---------- page ----------
-st.set_page_config(page_title="Model-2 Heatmap Viewer (Snapshot)", layout="wide")
+st.set_page_config(page_title="Model-2 Heatmap Viewer", layout="wide")
 st_autorefresh(interval=60_000, key="auto5m")  # rerun every 5 minutes
 
 # Trim side padding
@@ -128,49 +127,23 @@ def get_current_price(price_candlesticks):
         raise RuntimeError("Missing/short price_candlesticks.")
     return float(price_candlesticks[-1][4])  # [ts,o,h,l,c,v]
 
-def aggregate_totals_by_level_snapshot(y_axis, liq_triples, min_cell_usd: float = 0.0):
-    """
-    SNAPSHOT MODE: use ONLY the latest time slice (max x_index).
-    Sum magnitudes per y-level; optionally ignore tiny cells via min_cell_usd.
-    This matches what the heatmap shows 'right now' when you hover.
-    """
-    # Build price levels
+def aggregate_totals_by_level(y_axis, liq_triples):
     levels = []
     for v in (y_axis or []):
-        try:
-            levels.append(float(v))
-        except Exception:
-            levels.append(float("nan"))
-    if not levels:
-        return []
-
-    # Find latest x_index present
-    latest_x = None
-    for row in (liq_triples or []):
-        if isinstance(row, (list, tuple)) and len(row) >= 3:
-            try:
-                x = int(row[0])
-                latest_x = x if latest_x is None else max(latest_x, x)
-            except Exception:
-                continue
-    if latest_x is None:
-        return []
-
-    # Sum only cells from that latest x_index
+        try: levels.append(float(v))
+        except Exception: levels.append(float("nan"))
+    if not levels: return []
     sums = defaultdict(float)
     for row in (liq_triples or []):
         if not isinstance(row, (list, tuple)) or len(row) < 3:
             continue
-        x, yi, amt = row[:3]
+        _, yi, amt = row[:3]
         try:
-            x = int(x); yi = int(yi); amt = float(amt)
+            yi = int(yi); amt = float(amt)
         except Exception:
             continue
-        if x == latest_x and 0 <= yi < len(levels) and math.isfinite(amt):
-            mag = abs(amt)
-            if mag >= float(min_cell_usd):
-                sums[yi] += mag
-
+        if 0 <= yi < len(levels) and math.isfinite(amt):
+            sums[yi] += amt
     return [{"level": lvl, "total_usd": sums.get(idx, 0.0)}
             for idx, lvl in enumerate(levels) if math.isfinite(lvl)]
 
@@ -217,14 +190,13 @@ def combine_below_above(below, above):
 # ---------- sidebar ----------
 with st.sidebar:
     st.header("Settings")
-    currency      = st.text_input("Currency (coin symbol)", value="BTC").upper().strip()
-    pct_win       = st.slider("± Window (%)", 0.5, 20.0, 6.0, 0.5)
-    min_cell_usd  = st.number_input("Min cell USD (snapshot threshold)", min_value=0.0, value=0.0, step=100000.0, format="%.0f")
-    show_tables   = st.checkbox("Show combined table (Below & Above)", value=False)
+    currency   = st.text_input("Currency (coin symbol)", value="BTC").upper().strip()
+    pct_win    = st.slider("± Window (%)", 0.5, 20.0, 6.0, 0.5)
+    show_tables = st.checkbox("Show combined table (Below & Above)", value=False)
     if st.button("Refresh now"):
         st.cache_data.clear()
 
-st.title("Coinglass Model-2 Heatmap — Snapshot Imbalance")
+st.title("Coinglass Model-2 Heatmap")
 
 def render_panel(timeframe: str, container):
     with container:
@@ -239,31 +211,26 @@ def render_panel(timeframe: str, container):
         st.metric(f"{currency} (Model-2 {timeframe})", f"${price:,.2f}")
         st.caption(f"Params: {used_params} · Last updated: {fetched_at_utc:%Y-%m-%d %H:%M:%S} UTC")
 
-        # --- SNAPSHOT aggregation: latest time slice only ---
-        rows = aggregate_totals_by_level_snapshot(
-            data.get("y_axis", []),
-            data.get("liquidation_leverage_data", []),
-            min_cell_usd=min_cell_usd
-        )
-
+        rows = aggregate_totals_by_level(data.get("y_axis", []),
+                                         data.get("liquidation_leverage_data", []))
         below, above = split_window(rows, price, pct_win)
 
         # Combined table
         if show_tables:
-            st.markdown(f"**Levels within ±{pct_win}% (snapshot, combined)**")
+            st.markdown(f"**Levels within ±{pct_win}% (combined)**")
             combined = combine_below_above(below, above)
             df = pd.DataFrame(combined, columns=["side", "level", "total_usd"])
             st.dataframe(styled(df), use_container_width=True)
 
         # Metrics with compact numbers
         pos_imb, tot_above, tot_below = imbalance_above_below(below, above)
-        st.markdown("**Snapshot Imbalance (latest column only)**")
+        st.markdown("**Imbalance**")
         m1, m2, m3 = st.columns(3)
         m1.metric("Above Total", f"${fmt_compact(tot_above)}")
         m2.metric("Below Total", f"${fmt_compact(tot_below)}")
         m3.metric("Above/Below Imbalance", f"{pos_imb:.2%}")
 
-# Layout: single column with 12h, 24h, 72h panels stacked
+# Layout: single column with 12h, 48h, 72h panels stacked
 col = st.container()
 for tf in TIMEFRAMES:
     render_panel(tf, col)
