@@ -1,48 +1,39 @@
-# app.py — Coinglass Model-2 Heatmap (snapshot only): 12h, 24h, 72h
-# Imbalance is computed from the *latest time slice only* (no historical accumulation).
+# check_heatmap_snapshot.py — RIGHT NOW (snapshot) liquidation viewer
+# Imbalance and tables are computed from ONLY the latest x_index.
 
-import os, math, requests, datetime as dt
+import os, math, requests, warnings
 from collections import defaultdict
 from dotenv import load_dotenv
 import streamlit as st
 import pandas as pd
-from streamlit_autorefresh import st_autorefresh  # pip install streamlit-autorefresh
+
+# --- Silence urllib3 warning on macOS Python compiled with LibreSSL ---
+try:
+    from urllib3.exceptions import NotOpenSSLWarning
+    warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
+except Exception:
+    pass
 
 API_HOST = "https://open-api-v4.coinglass.com"
 COIN_ENDPOINT = "/api/futures/liquidation/aggregated-heatmap/model2"
 PAIR_ENDPOINT = "/api/futures/liquidation/heatmap/model2"
-TIMEFRAMES = ["12h", "24h", "72h"]  # shown in a single column
 
-# ---------- page ----------
-st.set_page_config(page_title="Model-2 Heatmap Viewer (Snapshot)", layout="wide")
-st_autorefresh(interval=60_000, key="auto5m")  # rerun every 5 minutes
-
-# Trim side padding
-st.markdown("""
-<style>
-.block-container {padding-top: 1rem; padding-bottom: 2rem; padding-left: 2rem; padding-right: 2rem;}
-</style>
-""", unsafe_allow_html=True)
-
-# ---------- helpers ----------
+# -------------------- Secrets / Config --------------------
 def get_api_key() -> str:
-    load_dotenv()
-    k = os.getenv("COINGLASS_API_KEY")
-    if not k:
-        st.error("Missing COINGLASS_API_KEY in .env")
-        st.stop()
-    return k
-
-def try_fetch(url, headers, params):
-    r = requests.get(url, headers=headers, params=params, timeout=20)
+    """Prefer Streamlit secrets, then .env, then env var."""
     try:
-        j = r.json()
+        key = st.secrets.get("COINGLASS_API_KEY")
+        if key:
+            return key
     except Exception:
-        j = {}
-    return r, j
+        pass
+    load_dotenv()
+    key = os.getenv("COINGLASS_API_KEY")
+    if key:
+        return key
+    raise RuntimeError("Missing COINGLASS_API_KEY (add to .env or .streamlit/secrets.toml)")
 
 def timeframe_variants(tf: str):
-    """Common encodings for '12h','24h','48h','72h' etc."""
     tf = tf.strip().lower()
     variants = {tf}
     if tf.endswith("h"):
@@ -59,82 +50,56 @@ def timeframe_variants(tf: str):
     ]
     return [v for v in order if v in variants]
 
-@st.cache_data(ttl=300)  # cache per (coin, timeframe) for 5 minutes
-def fetch_coin_model2_raw(currency: str, timeframe: str):
-    """COIN (aggregated) Model-2 only. Return (data, used_params, fetched_at_utc)."""
+def try_fetch(url, headers, params):
+    r = requests.get(url, headers=headers, params=params, timeout=20)
+    try:
+        j = r.json()
+    except Exception:
+        j = {}
+    return r, j
+
+def fetch_any_model2(currency: str, timeframe: str):
+    """Try COIN first; fall back to <COIN>USDT pair."""
     headers = {"CG-API-KEY": get_api_key(), "accept": "application/json"}
+
+    # COIN endpoint
     url = f"{API_HOST}{COIN_ENDPOINT}"
-    variants = timeframe_variants(timeframe)
-    param_options = []
-    for v in variants:
-        param_options += [
+    for v in timeframe_variants(timeframe):
+        for params in (
             {"currency": currency, "range": v},
             {"symbol":  currency,  "range": v},
             {"coin":    currency,  "range": v},
             {"currency": currency, "interval": v},
-        ]
-    last_error = None
-    for params in param_options:
-        r, j = try_fetch(url, headers, params)
-        if r.status_code != 200:
-            last_error = f"HTTP {r.status_code}: {r.text[:200]}"
-            continue
-        if str(j.get("code")) == "0" and "data" in j:
-            return j["data"], params, dt.datetime.utcnow()
-        last_error = f"code={j.get('code')} msg={j.get('msg')} (params={params})"
-    raise RuntimeError(last_error or "coin endpoint failed")
+        ):
+            r, j = try_fetch(url, headers, params)
+            if r.status_code == 200 and str(j.get("code")) == "0" and "data" in j:
+                return j["data"], {"endpoint":"coin","params":params}
 
-@st.cache_data(ttl=300)
-def fetch_pair_model2_raw(symbol_pair: str, timeframe: str):
-    """PAIR Model-2 only. Return (data, used_params, fetched_at_utc)."""
-    headers = {"CG-API-KEY": get_api_key(), "accept": "application/json"}
+    # PAIR endpoint
     url = f"{API_HOST}{PAIR_ENDPOINT}"
-    variants = timeframe_variants(timeframe)
-    param_options = []
-    for v in variants:
-        param_options += [
-            {"symbol": symbol_pair, "range": v},
-            {"symbol": symbol_pair, "interval": v},
-        ]
-    last_error = None
-    for params in param_options:
-        r, j = try_fetch(url, headers, params)
-        if r.status_code != 200:
-            last_error = f"HTTP {r.status_code}: {r.text[:200]}"
-            continue
-        if str(j.get("code")) == "0" and "data" in j:
-            return j["data"], params, dt.datetime.utcnow()
-        last_error = f"code={j.get('code')} msg={j.get('msg')} (params={params})"
-    raise RuntimeError(last_error or "pair endpoint failed")
+    pair = f"{currency}USDT"
+    for v in timeframe_variants(timeframe):
+        for params in (
+            {"symbol": pair, "range": v},
+            {"symbol": pair, "interval": v},
+        ):
+            r, j = try_fetch(url, headers, params)
+            if r.status_code == 200 and str(j.get("code")) == "0" and "data" in j:
+                return j["data"], {"endpoint":"pair","params":params}
 
-def default_pair_for_coin(coin: str) -> str:
-    return f"{coin.upper().strip()}USDT"
-
-def fetch_any_model2(currency: str, timeframe: str):
-    """Try COIN first (with multiple range spellings); if it fails, use PAIR <COIN>USDT."""
-    try:
-        data, params, ts = fetch_coin_model2_raw(currency, timeframe)
-        return data, params, ts, "coin"
-    except Exception as e_coin:
-        try:
-            pair = default_pair_for_coin(currency)
-            data, params, ts = fetch_pair_model2_raw(pair, timeframe)
-            return data, params, ts, "pair"
-        except Exception as e_pair:
-            raise RuntimeError(f"{e_coin} | {e_pair}")
+    raise RuntimeError("Failed to fetch model-2 data (coin and pair endpoints).")
 
 def get_current_price(price_candlesticks):
     if not price_candlesticks or len(price_candlesticks[-1]) < 5:
         raise RuntimeError("Missing/short price_candlesticks.")
     return float(price_candlesticks[-1][4])  # [ts,o,h,l,c,v]
 
+# -------------------- Snapshot aggregation (RIGHT NOW) --------------------
 def aggregate_totals_by_level_snapshot(y_axis, liq_triples, min_cell_usd: float = 0.0):
     """
-    SNAPSHOT MODE: use ONLY the latest time slice (max x_index).
-    Sum magnitudes per y-level; optionally ignore tiny cells via min_cell_usd.
-    This matches what the heatmap shows 'right now' when you hover.
+    Use ONLY the latest time slice (max x_index). Sum abs(cell) per price level.
     """
-    # Build price levels
+    # levels from y_axis
     levels = []
     for v in (y_axis or []):
         try:
@@ -144,7 +109,7 @@ def aggregate_totals_by_level_snapshot(y_axis, liq_triples, min_cell_usd: float 
     if not levels:
         return []
 
-    # Find latest x_index present
+    # find latest x_index
     latest_x = None
     for row in (liq_triples or []):
         if isinstance(row, (list, tuple)) and len(row) >= 3:
@@ -152,11 +117,11 @@ def aggregate_totals_by_level_snapshot(y_axis, liq_triples, min_cell_usd: float 
                 x = int(row[0])
                 latest_x = x if latest_x is None else max(latest_x, x)
             except Exception:
-                continue
+                pass
     if latest_x is None:
         return []
 
-    # Sum only cells from that latest x_index
+    # sum only latest column
     sums = defaultdict(float)
     for row in (liq_triples or []):
         if not isinstance(row, (list, tuple)) or len(row) < 3:
@@ -174,97 +139,202 @@ def aggregate_totals_by_level_snapshot(y_axis, liq_triples, min_cell_usd: float 
     return [{"level": lvl, "total_usd": sums.get(idx, 0.0)}
             for idx, lvl in enumerate(levels) if math.isfinite(lvl)]
 
-def split_window(rows, price, pct):
+# -------------------- Window & binning --------------------
+def within_window(rows, price, pct):
     tol = pct / 100.0
     window = [r for r in rows if price and abs(r["level"] - price)/price <= tol]
-    below  = sorted([r for r in window if r["level"] <  price], key=lambda r: price - r["level"])
-    above  = sorted([r for r in window if r["level"] >  price], key=lambda r: r["level"] - price)
+    below  = [r for r in window if r["level"] <  price]
+    above  = [r for r in window if r["level"] >  price]
     return below, above
 
-def imbalance_above_below(below, above):
-    total_below = sum(r["total_usd"] for r in below)
-    total_above = sum(r["total_usd"] for r in above)
-    denom = total_above + total_below
-    return ((total_above - total_below)/denom if denom else 0.0,
-            total_above, total_below)
+def bin_key(level, price, step_pct):
+    delta_pct = (level - price) / price * 100.0
+    k = math.floor(delta_pct / step_pct)
+    lo = k * step_pct
+    hi = (k + 1) * step_pct
+    label = f"{lo:+.2f}% to {hi:+.2f}%"
+    return (k, label)
 
-def fmt_compact(n: float) -> str:
-    """Return 1 decimal compact suffix (K/M/B/T)."""
+def summarize_side(rows, price, step_pct):
+    bins = defaultdict(float)
+    counts = defaultdict(int)
+    for r in rows:
+        _, label = bin_key(r["level"], price, step_pct)
+        bins[label] += r["total_usd"]
+        counts[label] += 1
+
+    def bin_center(lbl):
+        lo, _, hi = lbl.partition(" to ")
+        lo_v = float(lo.strip("%+ "))
+        hi_v = float(hi.strip("%"))
+        return (lo_v + hi_v) / 2.0
+
+    picked = [(label, total, counts[label]) for label, total in bins.items()]
+    picked.sort(key=lambda x: abs(bin_center(x[0])))  # nearest first
+    return picked
+
+def fmt_money(n):
     n = float(n)
     absn = abs(n)
-    if absn >= 1e12:
-        return f"{n/1e12:.1f}T"
-    if absn >= 1e9:
-        return f"{n/1e9:.1f}B"
-    if absn >= 1e6:
-        return f"{n/1e6:.1f}M"
-    if absn >= 1e3:
-        return f"{n/1e3:.1f}K"
-    return f"{n:.0f}"
+    if absn >= 1e12: return f"${n/1e12:.1f}T"
+    if absn >= 1e9:  return f"${n/1e9:.1f}B"
+    if absn >= 1e6:  return f"${n/1e6:.1f}M"
+    if absn >= 1e3:  return f"${n/1e3:.1f}K"
+    return f"${n:.0f}"
 
-def styled(df):
-    # Keep 'level' as price with 2 decimals, totals compact like 6.1B
-    return df.style.format({
-        "level": "{:,.2f}",
-        "total_usd": lambda x: fmt_compact(x)
-    })
+# -------------------- Streamlit UI --------------------
+st.set_page_config(page_title="Coinglass Liquidation Data — Snapshot", layout="wide")
 
-def combine_below_above(below, above):
-    """Single table with a 'side' column, preserving proximity order (below nearest first, then above)."""
-    rows = [{"side": "Below", **r} for r in below] + [{"side": "Above", **r} for r in above]
-    return rows
-
-# ---------- sidebar ----------
 with st.sidebar:
-    st.header("Settings")
-    currency      = st.text_input("Currency (coin symbol)", value="BTC").upper().strip()
-    pct_win       = st.slider("± Window (%)", 0.5, 20.0, 6.0, 0.5)
-    min_cell_usd  = st.number_input("Min cell USD (snapshot threshold)", min_value=0.0, value=0.0, step=100000.0, format="%.0f")
-    show_tables   = st.checkbox("Show combined table (Below & Above)", value=False)
-    if st.button("Refresh now"):
-        st.cache_data.clear()
+    st.title("Heatmap Checker — Snapshot")
+    coin = st.text_input("Coin (symbol)", value=os.getenv("COIN", "ETH").upper().strip())
+    timeframes_str = st.text_input("Timeframes (comma-separated)", value=os.getenv("TIMEFRAMES", "12h,24h,72h"))
+    window_pct = st.number_input("Window ±%", min_value=0.1, max_value=20.0, value=float(os.getenv("WINDOW_PCT", 6.0)), step=0.1)
+    # Controls per your spec:
+    show_tables = st.checkbox("Show tables", value=False)
+    show_nearest = st.checkbox("Show Nearest Big Levels", value=False)
+    run_btn = st.button("Fetch Snapshot", type="primary")
 
-st.title("Coinglass Model-2 Heatmap — Snapshot Imbalance")
+st.title(f"{coin} Liquidation Data")
 
-def render_panel(timeframe: str, container):
-    with container:
-        try:
-            data, used_params, fetched_at_utc, source_kind = fetch_any_model2(currency, timeframe)
-            price = get_current_price(data.get("price_candlesticks", []))
-        except Exception as e:
-            st.error(f"[{timeframe}] Fetch error: {e}")
-            return
+@st.cache_data(ttl=60)
+def run_for_timeframe(tf: str, coin: str, window_pct: float, bin_step: float = 0.25):
+    data, _meta = fetch_any_model2(coin, tf)
+    price = get_current_price(data.get("price_candlesticks", []))
+    rows  = aggregate_totals_by_level_snapshot(
+        data.get("y_axis", []),
+        data.get("liquidation_leverage_data", []),
+        0.0  # no min cell filter (you asked to remove it)
+    )
+    below, above = within_window(rows, price, window_pct)
 
-        st.subheader(f"{timeframe}")
-        st.metric(f"{currency} (Model-2 {timeframe})", f"${price:,.2f}")
-        st.caption(f"Params: {used_params} · Last updated: {fetched_at_utc:%Y-%m-%d %H:%M:%S} UTC")
+    # Totals / imbalance (snapshot within window)
+    t_above = sum(r["total_usd"] for r in above)
+    t_below = sum(r["total_usd"] for r in below)
+    denom = (t_above + t_below) or 1.0
+    imbalance = (t_above - t_below) / denom
 
-        # --- SNAPSHOT aggregation: latest time slice only ---
-        rows = aggregate_totals_by_level_snapshot(
-            data.get("y_axis", []),
-            data.get("liquidation_leverage_data", []),
-            min_cell_usd=min_cell_usd
+    # Bin summaries (snapshot) for tables
+    above_bins = summarize_side(above, price, bin_step)
+    below_bins = summarize_side(below, price, bin_step)
+
+    # Nearest levels by proximity (top 5 each)
+    close_above = sorted(above, key=lambda r: r["level"] - price)[:5]
+    close_below = sorted(below, key=lambda r: price - r["level"])[:5]
+
+    return {
+        "price": price,
+        "below": below,
+        "above": above,
+        "t_above": t_above,
+        "t_below": t_below,
+        "imbalance": imbalance,
+        "above_bins": above_bins,
+        "below_bins": below_bins,
+        "close_above": close_above,
+        "close_below": close_below,
+    }
+
+if run_btn:
+    try:
+        tfs = [s.strip() for s in timeframes_str.split(',') if s.strip()]
+        first_out = run_for_timeframe(tfs[0], coin, window_pct)
+        price_ref = first_out["price"]
+        lo = price_ref * (1 - window_pct/100)
+        hi = price_ref * (1 + window_pct/100)
+
+        # --- Header: one-row flexbox, space-between ---
+        st.markdown(
+            f"""
+            <div style='display:flex; justify-content:space-between; gap: 1.5rem; flex-wrap: wrap; padding-bottom: 12px;'>
+              <div><strong>Current Price:</strong> ${price_ref:,.2f}</div>
+              <div><strong>{window_pct:.2f}% Below Current Price:</strong> ${lo:,.2f}</div>
+              <div><strong>{window_pct:.2f}% Above Current Price:</strong> ${hi:,.2f}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-        below, above = split_window(rows, price, pct_win)
+        # Render timeframes (3 per row)
+        chunks = [tfs[i:i+3] for i in range(0, len(tfs), 3)]
+        for row_idx, chunk in enumerate(chunks):
+            cols = st.columns(len(chunk))
+            for i, tf in enumerate(chunk):
+                with cols[i]:
+                    try:
+                        out = first_out if (row_idx == 0 and i == 0) else run_for_timeframe(tf, coin, window_pct)
+                        st.subheader(tf.upper())
 
-        # Combined table
-        if show_tables:
-            st.markdown(f"**Levels within ±{pct_win}% (snapshot, combined)**")
-            combined = combine_below_above(below, above)
-            df = pd.DataFrame(combined, columns=["side", "level", "total_usd"])
-            st.dataframe(styled(df), use_container_width=True)
+                        # Imbalance metric
+                        st.metric("Imbalance", f"{out['imbalance']*100:+.2f}%")
 
-        # Metrics with compact numbers
-        pos_imb, tot_above, tot_below = imbalance_above_below(below, above)
-        st.markdown("**Snapshot Imbalance (latest column only)**")
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Above Total", f"${fmt_compact(tot_above)}")
-        m2.metric("Below Total", f"${fmt_compact(tot_below)}")
-        m3.metric("Above/Below Imbalance", f"{pos_imb:.2%}")
+                        # Totals row (flex)
+                        st.markdown(
+                            f"""
+                            <div style='display:flex; justify-content:normal; gap: 3rem; flex-wrap: wrap; margin-bottom: 6px; padding-bottom:15px;'>
+                              <div><strong>Above:</strong> {fmt_money(out['t_above'])[1:] if fmt_money(out['t_above']).startswith('$') else fmt_money(out['t_above'])}</div>
+                              <div><strong>Below:</strong> {fmt_money(out['t_below'])[1:] if fmt_money(out['t_below']).startswith('$') else fmt_money(out['t_below'])}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 
-# Layout: single column with 12h, 24h, 72h panels stacked
-col = st.container()
-for tf in TIMEFRAMES:
-    render_panel(tf, col)
-    st.divider()
+                        # ---------- Bin tables (snapshot) ----------
+                        if show_tables:
+                            def render_bin_table(title, bins):
+                                st.markdown(f"**{title} (snapshot bins)**")
+                                if not bins:
+                                    st.info("No data in window.")
+                                    return
+                                df = pd.DataFrame({
+                                    "% Bin": [b[0] for b in bins],
+                                    "Total (USD)": [float(b[1]) for b in bins],
+                                    "Levels": [int(b[2]) for b in bins],
+                                })
+                                max_total = df["Total (USD)"].max()
+
+                                def _hi(row):
+                                    style = "background-color:#00ff7f;color:#000;" if row["Total (USD)"] == max_total else ""
+                                    return [style] * len(row)
+
+                                styler = (
+                                    df.style
+                                      .apply(_hi, axis=1)
+                                      .format({"Total (USD)": lambda x: fmt_money(x)})
+                                )
+                                st.dataframe(styler, width="stretch")
+
+                            render_bin_table("ABOVE", out["above_bins"])
+                            render_bin_table("BELOW", out["below_bins"])
+
+                        # ---------- Nearest Big Levels ----------
+                        if show_nearest and (out["close_above"] or out["close_below"]):
+                            st.markdown("**Nearest Big Levels (snapshot)**")
+                            rows = []
+                            for r in out["close_above"]:
+                                dpct = (r["level"] - out["price"]) / out["price"] * 100
+                                rows.append({"Side":"ABOVE","Level": f"{r['level']:,.2f}", "%Δ": f"{dpct:+.3f}%", "Total (USD)": float(r['total_usd'])})
+                            for r in out["close_below"]:
+                                dpct = (r["level"] - out["price"]) / out["price"] * 100
+                                rows.append({"Side":"BELOW","Level": f"{r['level']:,.2f}", "%Δ": f"{dpct:+.3f}%", "Total (USD)": float(r['total_usd'])})
+
+                            df = pd.DataFrame(rows)
+                            if not df.empty:
+                                max_total = df["Total (USD)"].max()
+
+                                def _hi(row):
+                                    style = "background-color:#00ff7f;color:#000;" if row["Total (USD)"] == max_total else ""
+                                    return [style] * len(row)
+
+                                styler = (
+                                    df.style
+                                      .apply(_hi, axis=1)
+                                      .format({"Total (USD)": lambda x: fmt_money(x)})
+                                )
+                                st.dataframe(styler, width="stretch")
+                    except Exception as e:
+                        st.error(f"{tf}: {e}")
+    except Exception as e:
+        st.error(str(e))
+else:
+    st.info("Configure inputs on the left, then click **Fetch Snapshot**.")
