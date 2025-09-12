@@ -246,8 +246,8 @@ if run_btn:
         # --- Header: one-row flexbox, space-between ---
         st.markdown(
             f"""
-            <div style='display:flex; justify-content:space-between; gap: 1.5rem; flex-wrap: wrap; padding-bottom: 12px;'>
-              <div><strong>Current Price:</strong> ${price_ref:,.2f}</div>
+            <div style='font-size:18px; display:flex; justify-content:space-between; gap: 1.5rem; flex-wrap: wrap; padding-bottom: 30px;'>
+              <div style=><strong>Current Price:</strong> ${price_ref:,.2f}</div>
               <div><strong>{window_pct:.2f}% Below Current Price:</strong> ${lo:,.2f}</div>
               <div><strong>{window_pct:.2f}% Above Current Price:</strong> ${hi:,.2f}</div>
             </div>
@@ -271,7 +271,7 @@ if run_btn:
                         # Totals row (flex)
                         st.markdown(
                             f"""
-                            <div style='display:flex; justify-content:normal; gap: 3rem; flex-wrap: wrap; margin-bottom: 6px; padding-bottom:15px;'>
+                            <div style='display:flex; justify-content:normal; gap: 3rem; flex-wrap: wrap; margin-bottom: 6px; padding-bottom:30px;'>
                               <div><strong>Above:</strong> {fmt_money(out['t_above'])[1:] if fmt_money(out['t_above']).startswith('$') else fmt_money(out['t_above'])}</div>
                               <div><strong>Below:</strong> {fmt_money(out['t_below'])[1:] if fmt_money(out['t_below']).startswith('$') else fmt_money(out['t_below'])}</div>
                             </div>
@@ -282,7 +282,7 @@ if run_btn:
                         # ---------- Bin tables (snapshot) ----------
                         if show_tables:
                             def render_bin_table(title, bins):
-                                st.markdown(f"**{title} (snapshot bins)**")
+                                st.markdown(f"**Clusters {title}**")
                                 if not bins:
                                     st.info("No data in window.")
                                     return
@@ -304,12 +304,12 @@ if run_btn:
                                 )
                                 st.dataframe(styler, width="stretch")
 
-                            render_bin_table("ABOVE", out["above_bins"])
-                            render_bin_table("BELOW", out["below_bins"])
+                            render_bin_table("Above", out["above_bins"])
+                            render_bin_table("Below", out["below_bins"])
 
                         # ---------- Nearest Big Levels ----------
                         if show_nearest and (out["close_above"] or out["close_below"]):
-                            st.markdown("**Nearest Big Levels (snapshot)**")
+                            st.markdown("**Nearest Big Levels**")
                             rows = []
                             for r in out["close_above"]:
                                 dpct = (r["level"] - out["price"]) / out["price"] * 100
