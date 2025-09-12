@@ -190,6 +190,7 @@ with st.sidebar:
     coin = st.text_input("Coin (symbol)", value=os.getenv("COIN", "ETH").upper().strip())
     timeframes_str = st.text_input("Timeframes (comma-separated)", value=os.getenv("TIMEFRAMES", "12h,24h,72h"))
     window_pct = st.number_input("Window ±%", min_value=0.1, max_value=20.0, value=float(os.getenv("WINDOW_PCT", 6.0)), step=0.1)
+    bin_step = st.number_input("Bin step %", min_value=0.05, max_value=5.0, value=float(os.getenv("BIN_STEP_PCT", 0.25)), step=0.05)
     # Controls per your spec:
     show_tables = st.checkbox("Show tables", value=False)
     show_nearest = st.checkbox("Show Nearest Big Levels", value=False)
@@ -198,13 +199,13 @@ with st.sidebar:
 st.title(f"{coin} Liquidation Data")
 
 @st.cache_data(ttl=60)
-def run_for_timeframe(tf: str, coin: str, window_pct: float, bin_step: float = 0.25):
+def run_for_timeframe(tf: str, coin: str, window_pct: float, bin_step: float):
     data, _meta = fetch_any_model2(coin, tf)
     price = get_current_price(data.get("price_candlesticks", []))
     rows  = aggregate_totals_by_level_snapshot(
         data.get("y_axis", []),
         data.get("liquidation_leverage_data", []),
-        0.0  # no min cell filter (you asked to remove it)
+        0.0  # no min cell filter
     )
     below, above = within_window(rows, price, window_pct)
 
@@ -238,7 +239,7 @@ def run_for_timeframe(tf: str, coin: str, window_pct: float, bin_step: float = 0
 if run_btn:
     try:
         tfs = [s.strip() for s in timeframes_str.split(',') if s.strip()]
-        first_out = run_for_timeframe(tfs[0], coin, window_pct)
+        first_out = run_for_timeframe(tfs[0], coin, window_pct, bin_step)
         price_ref = first_out["price"]
         lo = price_ref * (1 - window_pct/100)
         hi = price_ref * (1 + window_pct/100)
@@ -247,7 +248,7 @@ if run_btn:
         st.markdown(
             f"""
             <div style='font-size:18px; display:flex; justify-content:space-between; gap: 1.5rem; flex-wrap: wrap; padding-bottom: 30px;'>
-              <div style=><strong>Current Price:</strong> ${price_ref:,.2f}</div>
+              <div><strong>Current Price:</strong> ${price_ref:,.2f}</div>
               <div><strong>{window_pct:.2f}% Below Current Price:</strong> ${lo:,.2f}</div>
               <div><strong>{window_pct:.2f}% Above Current Price:</strong> ${hi:,.2f}</div>
             </div>
@@ -262,7 +263,7 @@ if run_btn:
             for i, tf in enumerate(chunk):
                 with cols[i]:
                     try:
-                        out = first_out if (row_idx == 0 and i == 0) else run_for_timeframe(tf, coin, window_pct)
+                        out = first_out if (row_idx == 0 and i == 0) else run_for_timeframe(tf, coin, window_pct, bin_step)
                         st.subheader(tf.upper())
 
                         # Imbalance metric
@@ -271,7 +272,7 @@ if run_btn:
                         # Totals row (flex)
                         st.markdown(
                             f"""
-                            <div style='display:flex; justify-content:normal; gap: 3rem; flex-wrap: wrap; margin-bottom: 6px; padding-bottom:30px;'>
+                            <div style='display:flex; justify-content:space-between; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 6px; padding-bottom: 6px;'>
                               <div><strong>Above:</strong> {fmt_money(out['t_above'])[1:] if fmt_money(out['t_above']).startswith('$') else fmt_money(out['t_above'])}</div>
                               <div><strong>Below:</strong> {fmt_money(out['t_below'])[1:] if fmt_money(out['t_below']).startswith('$') else fmt_money(out['t_below'])}</div>
                             </div>
@@ -282,7 +283,7 @@ if run_btn:
                         # ---------- Bin tables (snapshot) ----------
                         if show_tables:
                             def render_bin_table(title, bins):
-                                st.markdown(f"**Clusters {title}**")
+                                st.markdown(f"**{title} (snapshot bins)**")
                                 if not bins:
                                     st.info("No data in window.")
                                     return
@@ -304,12 +305,12 @@ if run_btn:
                                 )
                                 st.dataframe(styler, width="stretch")
 
-                            render_bin_table("Above", out["above_bins"])
-                            render_bin_table("Below", out["below_bins"])
+                            render_bin_table("ABOVE", out["above_bins"])
+                            render_bin_table("BELOW", out["below_bins"])
 
                         # ---------- Nearest Big Levels ----------
                         if show_nearest and (out["close_above"] or out["close_below"]):
-                            st.markdown("**Nearest Big Levels**")
+                            st.markdown("**Nearest Big Levels (snapshot)**")
                             rows = []
                             for r in out["close_above"]:
                                 dpct = (r["level"] - out["price"]) / out["price"] * 100
